@@ -78,21 +78,22 @@ def _read_one(statement: str, parameters: tuple[Any, ...]):
         connection.close()
 
 
-def authenticate(username: str, password: str) -> dict[str, Any] | None:
-    """Verify bcrypt password and user-type membership."""
 
-    username = username.strip() if isinstance(username, str) else ""
+def authenticate(email: str, password: str) -> dict[str, Any] | None:
+    """Authenticate a user using email and bcrypt password."""
 
-    if not username or not isinstance(password, str) or not password:
+    email = email.strip() if isinstance(email, str) else ""
+
+    if not email or not isinstance(password, str) or not password:
         return None
 
     sql = (
         "SELECT " + _USER_FIELDS + ", u.User_Password_Hash "
         + _USER_JOINS
-        + " WHERE u.User_Username = %s LIMIT 1"
+        + " WHERE u.User_Email = %s LIMIT 1"
     )
 
-    row = _read_one(sql, (username,))
+    row = _read_one(sql, (email,))
 
     if row is None:
         return None
@@ -102,11 +103,11 @@ def authenticate(username: str, password: str) -> dict[str, Any] | None:
             password.encode("utf-8"),
             row["User_Password_Hash"].encode("utf-8")
         )
-
     except (ValueError, TypeError, AttributeError):
         return None
 
     return _to_session_user(row) if matches else None
+
 
 
 def get_active_user(user_id: int) -> dict[str, Any] | None:
