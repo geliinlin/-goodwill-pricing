@@ -78,9 +78,9 @@ def show_login():
                 clear_on_submit=False,
                 border=False
             ):
-                email = st.text_input(
-                    "Email",
-                    placeholder="you@goodwill.org",
+                login_identifier = st.text_input(
+                    "Email or Username",
+                    placeholder="Enter your email or username",
                     max_chars=100
                 )
 
@@ -114,7 +114,7 @@ def show_login():
             # Existing authentication logic
             if submitted:
                 try:
-                    user = authenticate(email, password)
+                    user = authenticate(login_identifier, password)
 
                 except (mysql.connector.Error, RuntimeError):
                     logger.exception(
@@ -128,8 +128,9 @@ def show_login():
 
                 if user is None:
                     st.error(
-                        "Invalid email or password, "
+                        "Invalid email, username or password, "
                         "or account is unavailable."
+                    )
                     )
                 else:
                     # Store user ID only
