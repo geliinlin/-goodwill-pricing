@@ -1,12 +1,19 @@
-"""Streamlit administrator page; all mutations go through guidelines.py."""
+"""Goodwill administrator guideline page: Figma-style UI with live MySQL data.
+
+All mutations delegate to guidelines.py. Reports are read-only and based on
+PRICING_DECISION records from the last 30 days.
+"""
 
 from collections import Counter
+from html import escape
+from pathlib import Path
 import logging
 
 import mysql.connector
 import streamlit as st
 
 from auth import require_user_type
+from database import get_connection
 from guidelines import (
     ATTRIBUTE_FIELDS, LOOKUPS, GuidelineError, load_catalog,
     save_guideline, set_guideline_active, snapshot_token,
@@ -15,132 +22,346 @@ from guidelines import (
 logger = logging.getLogger(__name__)
 
 
-def _handle_error(exc):
+def _html(value):
+    return escape(str(value), quote=True)
+
+
+def _notice(message):
+    st.session_state["gw_guideline_notice"] = message
+    st.session_state.pop("gw_guideline_editor", None)
+    st.session_state.pop("gw_guideline_snapshot", None)
+    st.session_state["gw_guideline_epoch"] = st.session_state.get("gw_guideline_epoch", 0) + 1
+    st.rerun()
+
+
+def _error(exc):
     if isinstance(exc, (GuidelineError, PermissionError)):
         st.error(str(exc))
     else:
         logger.exception("Guideline database operation failed")
-        st.error("Could not complete the database request. Check the connection and table permissions, then refresh before retrying.")
+        st.error("Could not complete the database request. Please try again or contact an administrator.")
 
 
-def _finish(message):
-    st.session_state["guideline_notice"] = message
-    st.session_state.pop("guideline_edit_snapshot", None)
-    st.session_state["guideline_epoch"] = st.session_state.get("guideline_epoch", 0) + 1
-    st.rerun()
+def _brand_header():
+    with st.container(key="gw_nav"):
+        brand, guidelines, users, reports, identity, signout = st.columns(
+            [3.1, 1.0, 0.8, 0.9, 2.4, 0.9], vertical_alignment="center"
+        )
+        with brand:
+            st.html('''
+            <div class="gw-brand">
+                <span class="gw-mark">g</span>
+                <span><span class="gw-brand-name">goodwill</span>
+                <span class="gw-brand-sub">PRICING DECISION SUPPORT SYSTEM</span></span>
+            </div>''')
+        with guidelines:
+            st.html('<div class="gw-nav-active">Guidelines</div>')
+        with users:
+            st.button("Users", key="gw_users_soon", disabled=True, help="Coming in a later module")
+        with reports:
+            st.button("Reports", key="gw_reports_soon", disabled=True, help="Full reporting comes in Module 6")
+        with identity:
+            st.html('<div class="gw-identity">Corporate workspace<br><b>Administrator</b></div>')
+        with signout:
+            if st.button("Logout", key="gw_top_logout"):
+                st.session_state.clear()
+                st.rerun()
 
 
 def _fields(lookups, prefix, row=None):
     row = row or {}
     values = {}
-    columns = st.columns(2)
-    for i, (_, id_field, _, label) in enumerate(LOOKUPS):
-        choices = lookups[id_field]
+    cols = st.columns(2)
+    for index, (_, field, _, label) in enumerate(LOOKUPS):
+        choices = lookups[field]
         ids = list(choices)
-        default = ids.index(row[id_field]) if row.get(id_field) in ids else 0
-        with columns[i % 2]:
-            values[id_field] = st.selectbox(label, ids, index=default, format_func=choices.get, key=f"{prefix}_{id_field}")
-    price = st.text_input("Suggested price ($)", value=str(row.get("Guideline_Suggested_Price", "")), placeholder="12.99", key=f"{prefix}_price")
-    active = st.checkbox("Active", value=bool(row.get("Guideline_Is_Active", True)), key=f"{prefix}_active")
+        selected = ids.index(row[field]) if row.get(field) in ids else 0
+        with cols[index % 2]:
+            values[field] = st.selectbox(
+                label, ids, index=selected, format_func=choices.get,
+                key=f"{prefix}_{field}",
+            )
+    price = st.text_input(
+        "Suggested price ($)",
+        value=str(row.get("Guideline_Suggested_Price", "")),
+        placeholder="12.99", key=f"{prefix}_price",
+    )
+    active = st.checkbox(
+        "Active", value=bool(row.get("Guideline_Is_Active", True)),
+        key=f"{prefix}_active",
+    )
     return values, price, active
+
+
+def _load_reports():
+    """Read actual final-price and override activity for the past 30 days."""
+    connection = get_connection()
+    cursor = None
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT c.Category_Name AS label,
+                   ROUND(AVG(d.Decision_Final_Price), 2) AS amount
+            FROM PRICING_DECISION d
+            JOIN ITEM i ON i.Item_Id = d.Item_Id
+            JOIN CATEGORY c ON c.Category_Id = i.Category_Id
+            WHERE d.Decision_Datetime >= NOW() - INTERVAL 30 DAY
+            GROUP BY c.Category_Id, c.Category_Name
+            ORDER BY amount DESC, c.Category_Name
+            LIMIT 4
+        """)
+        categories = cursor.fetchall()
+        cursor.execute("""
+            SELECT COUNT(*) AS total
+            FROM PRICING_DECISION d
+            JOIN PRICING_GUIDELINE g ON g.Guideline_Id = d.Guideline_Id
+            WHERE d.Decision_Datetime >= NOW() - INTERVAL 30 DAY
+              AND d.Decision_Final_Price <> g.Guideline_Suggested_Price
+        """)
+        total = int(cursor.fetchone()["total"])
+        cursor.execute("""
+            SELECT COALESCE(NULLIF(TRIM(d.Decision_Reason), ''), 'Not specified') AS label,
+                   COUNT(*) AS count
+            FROM PRICING_DECISION d
+            JOIN PRICING_GUIDELINE g ON g.Guideline_Id = d.Guideline_Id
+            WHERE d.Decision_Datetime >= NOW() - INTERVAL 30 DAY
+              AND d.Decision_Final_Price <> g.Guideline_Suggested_Price
+            GROUP BY label
+            ORDER BY count DESC, label
+            LIMIT 4
+        """)
+        reasons = cursor.fetchall()
+        return categories, reasons, total
+    finally:
+        if cursor is not None:
+            cursor.close()
+        connection.close()
+
+
+def _bar(label, proportion, value, muted=False):
+    width = max(0, min(100, round(proportion * 100)))
+    tone = "gw-bar-muted" if muted else "gw-bar-teal"
+    st.html(
+        '<div class="gw-report-row">'
+        f'<span title="{_html(label)}">{_html(label)}</span>'
+        f'<span class="gw-bar-track"><span class="{tone}" style="width:{width}%"></span></span>'
+        f'<strong>{_html(value)}</strong>'
+        '</div>'
+    )
+
+
+def _reports_panel():
+    with st.container(key="gw_report_panel"):
+        st.html('''
+        <div class="gw-panel-heading">Reports</div>
+        <div class="gw-panel-sub">Actual activity · Last 30 days</div>
+        <div class="gw-rule"></div>
+        <div class="gw-report-title">Top Priced Categories</div>
+        <div class="gw-panel-sub">Average final price</div>
+        ''')
+        try:
+            categories, reasons, total = _load_reports()
+        except (mysql.connector.Error, RuntimeError):
+            logger.exception("Could not load guideline dashboard reports")
+            st.caption("Reporting data is temporarily unavailable.")
+            return
+        if categories:
+            maximum = max(float(r["amount"]) for r in categories) or 1
+            for record in categories:
+                value = float(record["amount"])
+                _bar(record["label"], value / maximum, f"${value:,.2f}")
+        else:
+            st.caption("No priced items in the last 30 days.")
+
+        st.html('''<div class="gw-rule"></div>
+        <div class="gw-report-title">Most Common Override Reasons</div>
+        <div class="gw-panel-sub">Share of price overrides</div>''')
+        if total:
+            for i, record in enumerate(reasons):
+                percent = int(record["count"]) / total
+                _bar(record["label"], percent, f"{percent:.0%}", muted=i != 0)
+            st.html(f'<div class="gw-report-foot">Based on {total:,} price override(s)</div>')
+        else:
+            st.caption("No price overrides in the last 30 days.")
+
+
+def _table(rows):
+    status = st.session_state.get("gw_guideline_status", "All statuses")
+    visible = [
+        r for r in rows
+        if status == "All statuses"
+        or bool(r["Guideline_Is_Active"]) == (status == "Active")
+    ]
+    with st.container(key="gw_guideline_table"):
+        heading, filter_column = st.columns([4, 1.4], vertical_alignment="center")
+        with heading:
+            st.html('''<div class="gw-panel-heading">Active Guidelines</div>
+            <div class="gw-panel-sub">Current pricing and version history</div>''')
+        with filter_column:
+            st.selectbox(
+                "Status filter", ["All statuses", "Active", "Inactive"],
+                key="gw_guideline_status", label_visibility="collapsed",
+            )
+
+        headers = st.columns([2.2, 1.8, 1.65, 1.55, 1.2, 1.1], gap="small")
+        for col, title in zip(
+            headers, ["Category", "Brand Tier", "Condition", "Suggested Price", "Status", "Action"]
+        ):
+            with col:
+                st.html(f'<div class="gw-col-heading">{title}</div>')
+
+        for r in visible:
+            rid = int(r["Guideline_Id"])
+            with st.container(key=f"gw_row_{rid}"):
+                cells = st.columns([2.2, 1.8, 1.65, 1.55, 1.2, 1.1], gap="small", vertical_alignment="center")
+                for cell, value in zip(cells[:3], (
+                    r["Category_Name"], r["Brand_Name"], r["Condition_Name"]
+                )):
+                    with cell:
+                        st.html(f'<div class="gw-cell" title="{_html(value)}">{_html(value)}</div>')
+                with cells[3]:
+                    st.html(f'<div class="gw-cell gw-price">${float(r["Guideline_Suggested_Price"]):,.2f}</div>')
+                with cells[4]:
+                    active = bool(r["Guideline_Is_Active"])
+                    cls, label = ("gw-pill-on", "• Active") if active else ("gw-pill-off", "• Inactive")
+                    st.html(f'<div class="gw-pill {cls}">{label}</div>')
+                with cells[5]:
+                    if st.button("Update", key=f"gw_update_{rid}", use_container_width=True):
+                        st.session_state["gw_guideline_editor"] = rid
+                        st.session_state["gw_guideline_snapshot"] = dict(r)
+                        st.rerun()
+        if not visible:
+            st.info("No guidelines match this filter.")
+        active_count = sum(bool(r["Guideline_Is_Active"]) for r in rows)
+        st.html(
+            f'<div class="gw-table-foot">Showing {len(visible)} guideline(s) · '
+            f'{active_count} active, {len(rows) - active_count} inactive</div>'
+        )
+
+
+def _editor(user, lookups, rows):
+    selection = st.session_state.get("gw_guideline_editor")
+    if selection is None:
+        return
+    by_id = {int(r["Guideline_Id"]): r for r in rows}
+    editing = selection != "new"
+    if editing and selection not in by_id:
+        st.warning("This guideline is no longer available.")
+        st.session_state.pop("gw_guideline_editor", None)
+        return
+    missing = [label for _, field, _, label in LOOKUPS if not lookups[field]]
+    if missing:
+        st.warning("Missing lookup records: " + ", ".join(missing))
+        return
+    row = by_id[selection] if editing else None
+    snapshot = st.session_state.get("gw_guideline_snapshot") if editing else None
+    if editing and (not snapshot or snapshot["Guideline_Id"] != selection):
+        snapshot = dict(row)
+        st.session_state["gw_guideline_snapshot"] = snapshot
+    stale = editing and snapshot_token(snapshot) != snapshot_token(row)
+    with st.container(key="gw_guideline_editor_panel"):
+        st.subheader(f"Update Guideline #{selection}" if editing else "Add New Guideline")
+        if editing:
+            st.caption("Price or attribute changes create a new version and deactivate the old guideline.")
+        if stale:
+            st.warning("This guideline changed. Reload it before saving.")
+            if st.button("Reload selected guideline", key="gw_reload_selected"):
+                st.session_state["gw_guideline_snapshot"] = dict(row)
+                st.session_state["gw_guideline_epoch"] = st.session_state.get("gw_guideline_epoch", 0) + 1
+                st.rerun()
+        else:
+            epoch = st.session_state.get("gw_guideline_epoch", 0)
+            prefix = f"gw_form_{selection}_{epoch}"
+            with st.form(prefix):
+                attributes, price, active = _fields(lookups, prefix, snapshot)
+                save = st.form_submit_button("Save Guideline", type="primary")
+            if save:
+                try:
+                    saved_id = save_guideline(
+                        user, attributes, price, active,
+                        guideline_id=selection if editing else None,
+                        expected_token=snapshot_token(snapshot) if editing else None,
+                    )
+                except (GuidelineError, PermissionError, mysql.connector.Error, RuntimeError) as exc:
+                    _error(exc)
+                else:
+                    _notice(f"Guideline #{saved_id} saved successfully.")
+
+            if editing:
+                target = not bool(snapshot["Guideline_Is_Active"])
+                label = "Activate Guideline" if target else "Deactivate Guideline"
+                if st.button(label, key=f"gw_toggle_{selection}"):
+                    try:
+                        set_guideline_active(user, selection, target, snapshot_token(snapshot))
+                    except (GuidelineError, PermissionError, mysql.connector.Error, RuntimeError) as exc:
+                        _error(exc)
+                    else:
+                        _notice(f"Guideline #{selection} is now {'active' if target else 'inactive'}.")
+        if st.button("Cancel", key="gw_close_editor"):
+            st.session_state.pop("gw_guideline_editor", None)
+            st.session_state.pop("gw_guideline_snapshot", None)
+            st.rerun()
 
 
 def show_guideline_management(user):
     require_user_type(user, {"Administrator"})
-    st.title("Pricing Guideline Management")
-    st.caption("Maintain headquarters pricing by category, brand, condition and item type.")
-    if notice := st.session_state.pop("guideline_notice", None):
-        st.success(notice)
+    st.html(Path(__file__).with_name("guideline_style.css"))
+    _brand_header()
+
+    if message := st.session_state.pop("gw_guideline_notice", None):
+        st.success(message)
+
     try:
         lookups, rows = load_catalog(user)
-    except (mysql.connector.Error, RuntimeError, PermissionError) as exc:
-        _handle_error(exc)
+    except (mysql.connector.Error, RuntimeError, PermissionError, GuidelineError) as exc:
+        _error(exc)
         return
 
-    counts = Counter(tuple(r[f] for f in ATTRIBUTE_FIELDS) for r in rows if r["Guideline_Is_Active"])
-    duplicates = sum(count > 1 for count in counts.values())
-    active_count = sum(bool(r["Guideline_Is_Active"]) for r in rows)
-    a, b, c = st.columns(3)
-    a.metric("Total guidelines", len(rows))
-    b.metric("Active", active_count)
-    c.metric("Inactive", len(rows) - active_count)
-    if duplicates:
-        st.warning(f"{duplicates} attribute combination(s) already have multiple active guidelines. Deactivate the extra records before using price matching.")
+    with st.container(key="gw_guideline_content"):
+        title, add = st.columns([4, 1.5], vertical_alignment="center")
+        with title:
+            st.html('''
+            <div class="gw-eyebrow">CORPORATE ADMIN</div>
+            <div class="gw-page-title">Guideline management</div>
+            <div class="gw-page-subtitle">Consistent pricing starts with clear, up-to-date guidelines.</div>
+            ''')
+        with add:
+            if st.button("＋  Add New Guideline", key="gw_add_guideline", type="primary", use_container_width=True):
+                st.session_state["gw_guideline_editor"] = "new"
+                st.session_state.pop("gw_guideline_snapshot", None)
+                st.rerun()
 
-    browse, create = st.tabs(["Browse & Edit", "Add Guideline"])
-    with browse:
-        left, right = st.columns([3, 1])
-        query = left.text_input("Search guidelines", placeholder="Category, brand, condition, item type or ID").strip().casefold()
-        status = right.selectbox("Status filter", ["All", "Active", "Inactive"])
-        filtered = [r for r in rows if (status == "All" or bool(r["Guideline_Is_Active"]) == (status == "Active")) and (not query or query in " ".join(str(r[k]) for k in ("Guideline_Id", "Category_Name", "Brand_Name", "Condition_Name", "Item_Type_Name")).casefold())]
-        table = [{
-            "ID": r["Guideline_Id"], "Category": r["Category_Name"], "Brand": r["Brand_Name"],
-            "Condition": r["Condition_Name"], "Item type": r["Item_Type_Name"],
-            "Suggested price ($)": float(r["Guideline_Suggested_Price"]),
-            "Status": "Active" if r["Guideline_Is_Active"] else "Inactive",
-            "Updated": r["Guideline_Last_Updated"], "Administrator": r["Admin_Name"],
-        } for r in filtered]
-        st.dataframe(table, hide_index=True, use_container_width=True,
-                     column_config={"Suggested price ($)": st.column_config.NumberColumn(format="$%.2f")})
-        st.caption(f"{len(filtered)} guideline(s) shown. Dates use the MySQL server's time zone.")
-        if filtered:
-            _edit(user, lookups, filtered)
-        else:
-            st.info("No matching guidelines. Adjust the filters or add a guideline.")
+        # Open the editor near the top after Add/Update is clicked.
+        _editor(user, lookups, rows)
 
-    with create:
-        missing = [label for _, field, _, label in LOOKUPS if not lookups[field]]
-        if missing:
-            st.info("Add records to these existing lookup tables first: " + ", ".join(missing) + ".")
-        else:
-            epoch = st.session_state.get("guideline_epoch", 0)
-            with st.form(f"add_guideline_{epoch}"):
-                attributes, price, active = _fields(lookups, f"new_{epoch}")
-                submitted = st.form_submit_button("Save New Guideline", type="primary")
-            if submitted:
-                try:
-                    new_id = save_guideline(user, attributes, price, active)
-                except (GuidelineError, PermissionError, mysql.connector.Error, RuntimeError) as exc:
-                    _handle_error(exc)
-                else:
-                    _finish(f"Guideline #{new_id} saved.")
+        active = [r for r in rows if r["Guideline_Is_Active"]]
+        counts = Counter(tuple(r[f] for f in ATTRIBUTE_FIELDS) for r in active)
+        duplicates = sum(n > 1 for n in counts.values())
 
+        m1, m2, m3, note = st.columns([1, 1, 1, 1.22])
+        cards = (
+            (m1, len(active), "Active guidelines", "Available to store staff"),
+            (m2, len({r["Category_Id"] for r in active}), "Categories covered", "Across all active guidelines"),
+            (m3, len(rows) - len(active), "Deactivated guidelines", "Preserved for version history"),
+        )
+        for col, number, title, caption in cards:
+            with col:
+                st.html(
+                    f'<div class="gw-metric"><div class="gw-metric-value">{number}</div>'
+                    f'<div><div class="gw-metric-label">{title}</div>'
+                    f'<div class="gw-metric-caption">{caption}</div></div></div>'
+                )
+        with note:
+            st.html('''<div class="gw-guidance"><b>One active guideline per combination</b>
+            <div>Adding a replacement automatically deactivates the previous guideline.</div></div>''')
+        if duplicates:
+            st.warning(f"{duplicates} attribute combination(s) have multiple active guidelines. Resolve them before item matching.")
 
-def _edit(user, lookups, rows):
-    by_id = {r["Guideline_Id"]: r for r in rows}
-    selected = st.selectbox("Select guideline to edit", list(by_id), format_func=lambda i: f"#{i} · {by_id[i]['Category_Name']} · {by_id[i]['Brand_Name']} · {by_id[i]['Condition_Name']} · {by_id[i]['Item_Type_Name']}")
-    snapshot = st.session_state.get("guideline_edit_snapshot")
-    if snapshot is None or snapshot["Guideline_Id"] != selected:
-        snapshot = dict(by_id[selected])
-        st.session_state["guideline_edit_snapshot"] = snapshot
-    if st.button("Reload selected guideline"):
-        st.session_state.pop("guideline_edit_snapshot", None)
-        st.session_state["guideline_epoch"] = st.session_state.get("guideline_epoch", 0) + 1
-        st.rerun()
-    if snapshot_token(snapshot) != snapshot_token(by_id[selected]):
-        st.warning("This record changed after you opened it. Reload it before editing.")
-    if any(snapshot[f] not in lookups[f] for f in ATTRIBUTE_FIELDS):
-        st.warning("A selected lookup value is unavailable. Reload the page.")
-        return
-    epoch = st.session_state.get("guideline_epoch", 0)
-    prefix = f"edit_{selected}_{epoch}"
-    st.caption("Changing price or attributes creates a replacement guideline and deactivates this one. Existing pricing decisions keep their original guideline.")
-    with st.form(prefix):
-        attributes, price, active = _fields(lookups, prefix, snapshot)
-        submitted = st.form_submit_button("Save Changes", type="primary")
-    if submitted:
-        try:
-            saved_id = save_guideline(user, attributes, price, active, guideline_id=selected, expected_token=snapshot_token(snapshot))
-        except (GuidelineError, PermissionError, mysql.connector.Error, RuntimeError) as exc:
-            _handle_error(exc)
-        else:
-            _finish(f"Guideline #{saved_id} saved." if saved_id == selected else f"Guideline #{saved_id} created; #{selected} is now inactive.")
-    target_active = not bool(snapshot["Guideline_Is_Active"])
-    label = "Activate Guideline" if target_active else "Deactivate Guideline"
-    if st.button(label, key=f"{prefix}_status"):
-        try:
-            set_guideline_active(user, selected, target_active, snapshot_token(snapshot))
-        except (GuidelineError, PermissionError, mysql.connector.Error, RuntimeError) as exc:
-            _handle_error(exc)
-        else:
-            _finish(f"Guideline #{selected} is now {'active' if target_active else 'inactive'}.")
+        left, right = st.columns([2.65, 1.1], gap="large")
+        with left:
+            _table(rows)
+        with right:
+            _reports_panel()
+
+        st.html('''<div class="gw-page-footer"><span>© 2026 Goodwill. All rights reserved.</span>
+        <span>Goodwill Pricing Decision Support System</span></div>''')
