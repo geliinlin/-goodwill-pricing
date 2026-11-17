@@ -1,3 +1,4 @@
+
 """Authentication and authorization using the existing G3 MySQL schema."""
 
 from typing import Any
@@ -22,20 +23,20 @@ _USER_JOINS = """
 
 
 def _to_session_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Accept active users with a matching role-specific record only."""
+    """Accept active users with matching user-type records."""
+
     if not row or not bool(row["User_Is_Active"]):
         return None
 
     user_type = row["User_Type"]
-    if user_type == "Administrator" and row["Admin_Id"] is not None:
-        role = "Administrator"
-    
-    elif (
-        user_type == "Store Staff"
-        and row["Staff_Id"] is not None
-        and row["Branch_Id"] is not None
-    ):
-        role = "Employee"
+
+    if user_type == "Administrator":
+        if row["Admin_Id"] is None:
+            return None
+
+    elif user_type == "Store Staff":
+        if row["Staff_Id"] is None or row["Branch_Id"] is None:
+            return None
 
     else:
         return None
@@ -43,21 +44,34 @@ def _to_session_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         "user_id": int(row["User_Id"]),
         "username": row["User_Username"],
-        "full_name": f"{row['User_First_Name']} {row['User_Last_Name']}",
-        "role": role,
-        "branch_id": row["Branch_Id"] if role == "Employee" else None,
-        "branch_name": row["Branch_Name"] if role == "Employee" else None,
+        "full_name": (
+            f"{row['User_First_Name']} {row['User_Last_Name']}"
+        ),
+        "user_type": user_type,
+        "branch_id": (
+            row["Branch_Id"]
+            if user_type == "Store Staff"
+            else None
+        ),
+        "branch_name": (
+            row["Branch_Name"]
+            if user_type == "Store Staff"
+            else None
+        ),
     }
 
 
 def _read_one(statement: str, parameters: tuple[Any, ...]):
-    """Execute one parameterized read, closing cursor and connection."""
+    """Execute one parameterized read and close the connection."""
+
     connection = get_connection()
     cursor = None
+
     try:
         cursor = connection.cursor(dictionary=True)
         cursor.execute(statement, parameters)
         return cursor.fetchone()
+
     finally:
         if cursor is not None:
             cursor.close()
@@ -65,8 +79,10 @@ def _read_one(statement: str, parameters: tuple[Any, ...]):
 
 
 def authenticate(username: str, password: str) -> dict[str, Any] | None:
-    """Verify bcrypt password hash and role membership. Never return the hash."""
+    """Verify bcrypt password and user-type membership."""
+
     username = username.strip() if isinstance(username, str) else ""
+
     if not username or not isinstance(password, str) or not password:
         return None
 
@@ -75,27 +91,43 @@ def authenticate(username: str, password: str) -> dict[str, Any] | None:
         + _USER_JOINS
         + " WHERE u.User_Username = %s LIMIT 1"
     )
+
     row = _read_one(sql, (username,))
+
     if row is None:
         return None
 
     try:
         matches = bcrypt.checkpw(
-            password.encode("utf-8"), row["User_Password_Hash"].encode("utf-8")
+            password.encode("utf-8"),
+            row["User_Password_Hash"].encode("utf-8")
         )
+
     except (ValueError, TypeError, AttributeError):
-        # Do not permit plaintext or unsupported password formats to log in.
         return None
+
     return _to_session_user(row) if matches else None
 
 
 def get_active_user(user_id: int) -> dict[str, Any] | None:
-    """Recheck status and role on each Streamlit rerun, including revocation."""
-    sql = "SELECT " + _USER_FIELDS + _USER_JOINS + " WHERE u.User_Id = %s LIMIT 1"
+    """Recheck user status and type on every Streamlit rerun."""
+
+    sql = (
+        "SELECT " + _USER_FIELDS
+        + _USER_JOINS
+        + " WHERE u.User_Id = %s LIMIT 1"
+    )
+
     return _to_session_user(_read_one(sql, (user_id,)))
 
 
-def require_role(user: dict[str, Any] | None, allowed_roles: set[str]) -> None:
-    """Call in privileged service functions, not just page-navigation code."""
-    if user is None or user.get("role") not in allowed_roles:
-        raise PermissionError("You are not authorized to access this function.")
+def require_user_type(
+    user: dict[str, Any] | None,
+    allowed_types: set[str]
+) -> None:
+    """Ensure the user is authorized for the requested operation."""
+
+    if user is None or user.get("user_type") not in allowed_types:
+        raise PermissionError(
+            "You are not authorized to access this function."
+        )
