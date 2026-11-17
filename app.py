@@ -96,11 +96,13 @@ def show_login():
                 )
 
             # Password recovery information
-            with st.popover("Forgot Password?"):
-                st.write(
-                    "Please contact your system administrator "
-                    "to reset your password."
-                )
+            if st.button(
+                "Forgot Password?",
+                key="gw_go_reset",
+                type="tertiary"
+            ):
+                st.session_state["auth_view"] = "reset"
+                st.rerun()
 
             st.html("""
             <div class="gw-card-divider"></div>
@@ -152,6 +154,129 @@ def show_login():
     </div>
     """)
 
+
+def show_password_reset():
+    """Display the password recovery page."""
+
+    # Load existing login page styles
+    st.html(Path(__file__).with_name("login_style.css"))
+
+    # Top navigation
+    st.html("""
+    <div class="gw-navbar">
+        <div class="gw-brand">
+            <div class="gw-logo">g</div>
+            <div>
+                <div class="gw-brand-name">goodwill</div>
+                <div class="gw-brand-subtitle">
+                    PRICING DECISION SUPPORT SYSTEM
+                </div>
+            </div>
+        </div>
+        <div class="gw-portal">
+            STAFF & ADMIN PORTAL
+        </div>
+    </div>
+    """)
+
+    with st.container(horizontal_alignment="center"):
+
+        # Page tagline
+        st.html("""
+        <div class="gw-tagline">
+            ACCOUNT RECOVERY
+        </div>
+        """)
+
+        # Password reset card
+        with st.container(
+            key="goodwill_login_card",
+            width=490,
+            border=False
+        ):
+
+            st.html("""
+            <div class="gw-card-logo">
+                <span class="gw-small-logo">g</span>
+                goodwill
+            </div>
+
+            <div class="gw-welcome">
+                Reset Password
+            </div>
+
+            <div class="gw-description">
+                Enter your email address to request
+                a password reset.
+            </div>
+            """)
+
+            # Email form
+            with st.form(
+                "password_reset_form",
+                clear_on_submit=False,
+                border=False
+            ):
+
+                email = st.text_input(
+                    "Email",
+                    placeholder="you@goodwill.org",
+                    max_chars=100
+                )
+
+                submitted = st.form_submit_button(
+                    "Send Reset Link",
+                    type="primary",
+                    use_container_width=True
+                )
+
+            # Handle reset request
+            if submitted:
+                email = email.strip()
+
+                if not email or "@" not in email:
+                    st.error(
+                        "Please enter a valid email address."
+                    )
+                else:
+                    st.info(
+                        "Automatic password reset emails are "
+                        "not enabled yet. Please contact "
+                        "your system administrator."
+                    )
+
+            # Back to login navigation
+            if st.button(
+                "← Back to Login",
+                key="gw_reset_back",
+                type="tertiary",
+                use_container_width=True
+            ):
+                st.session_state["auth_view"] = "login"
+                st.rerun()
+
+            st.html("""
+            <div class="gw-reset-note">
+                For password recovery assistance,
+                please contact your system administrator.
+            </div>
+            """)
+
+        # Mission statement
+        st.html("""
+        <div class="gw-mission">
+            Supporting our mission, one thoughtfully
+            priced item at a time.
+        </div>
+        """)
+
+    # Footer
+    st.html("""
+    <div class="gw-footer">
+        <span>© 2026 Goodwill. All rights reserved.</span>
+        <span>Goodwill Pricing Decision Support System</span>
+    </div>
+    """)
 
 
 def sidebar(user):
@@ -210,11 +335,21 @@ def show_employee_home(user):
     )
 
 
+
 def main():
     if "user_id" not in st.session_state:
-        show_login()
-        return
 
+        auth_view = st.session_state.get(
+            "auth_view", "login"
+        )
+
+        if auth_view == "reset":
+            show_password_reset()
+        else:
+            show_login()
+
+        return
+        
     try:
         # Recheck account status and user type on every rerun.
         user = get_active_user(
