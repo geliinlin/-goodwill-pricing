@@ -14,4 +14,3 @@ USER appuser
 EXPOSE 8501
 CMD ["python", "-m", "streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
 
-COPY login_style.css /app/login_style.css
