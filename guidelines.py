@@ -13,7 +13,7 @@ import logging
 
 import mysql.connector
 
-from auth import require_role
+from auth import require_user_type
 from database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ def _authorize(cursor, user, writing=False):
 
 @contextmanager
 def _session(user, writing=False):
-    require_role(user, {"Administrator"})
+    require_user_type(user, {"Administrator"})
     connection = get_connection()
     cursor = None
     lock_name = None
@@ -184,7 +184,7 @@ def _insert(cursor, admin_id, values, price, active):
 
 def save_guideline(user, attributes, price, active=True, *, guideline_id=None, expected_token=None):
     """Create or edit. An edited price/attribute combination gets a new ID."""
-    require_role(user, {"Administrator"})
+    require_user_type(user, {"Administrator"})
     price = parse_price(price)
     if type(active) is not bool:
         raise GuidelineError("Status must be Active or Inactive.")
