@@ -2,7 +2,7 @@
 """Goodwill Pricing Management System — Modules 1 and 2."""
 
 import logging
-
+from pathlib import Path
 import mysql.connector
 import streamlit as st
 
@@ -19,43 +19,138 @@ st.set_page_config(
 logger = logging.getLogger(__name__)
 
 
+
 def show_login():
-    st.title("Goodwill Pricing Management System")
-    st.caption(
-        "Secure access for headquarters administrators and store employees"
-    )
+    # Load login-page styling
+    st.html(Path(__file__).with_name("login_style.css"))
 
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username", max_chars=50)
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button(
-            "Log In",
-            use_container_width=True
-        )
+    # Top navigation
+    st.html("""
+    <div class="gw-navbar">
+        <div class="gw-brand">
+            <div class="gw-logo">g</div>
+            <div>
+                <div class="gw-brand-name">goodwill</div>
+                <div class="gw-brand-subtitle">
+                    PRICING DECISION SUPPORT SYSTEM
+                </div>
+            </div>
+        </div>
+        <div class="gw-portal">STAFF & ADMIN PORTAL</div>
+    </div>
+    """)
 
-    if submitted:
-        try:
-            user = authenticate(username, password)
+    # Page content
+    with st.container(horizontal_alignment="center"):
 
-        except (mysql.connector.Error, RuntimeError):
-            logger.exception(
-                "Login failed due to a database/configuration error"
-            )
-            st.error(
-                "Cannot connect to the database. "
-                "Please contact the system administrator."
-            )
-            return
+        st.html("""
+        <div class="gw-tagline">
+            A LITTLE CLARITY. A LOT OF GOOD.
+        </div>
+        """)
 
-        if user is None:
-            st.error(
-                "Invalid username or password, "
-                "or account is unavailable."
-            )
-        else:
-            # Only store user ID, never password or password hash.
-            st.session_state["user_id"] = user["user_id"]
-            st.rerun()
+        # Centered login card
+        with st.container(
+            key="goodwill_login_card",
+            width=490,
+            border=False
+        ):
+
+            st.html("""
+            <div class="gw-card-logo">
+                <span class="gw-small-logo">g</span>
+                goodwill
+            </div>
+
+            <div class="gw-welcome">
+                Welcome back
+            </div>
+
+            <div class="gw-description">
+                Goodwill Pricing Decision<br>
+                Support System
+            </div>
+            """)
+
+            # Functional login form
+            with st.form(
+                "login_form",
+                clear_on_submit=False,
+                border=False
+            ):
+                email = st.text_input(
+                    "Email",
+                    placeholder="you@goodwill.org",
+                    max_chars=100
+                )
+
+                password = st.text_input(
+                    "Password",
+                    type="password"
+                )
+
+                submitted = st.form_submit_button(
+                    "Login",
+                    type="primary",
+                    use_container_width=True
+                )
+
+            # Password recovery information
+            with st.popover("Forgot Password?"):
+                st.write(
+                    "Please contact your system administrator "
+                    "to reset your password."
+                )
+
+            st.html("""
+            <div class="gw-card-divider"></div>
+
+            <div class="gw-card-note">
+                For authorized Goodwill team members only.<br>
+                Price with confidence. Create more opportunity.
+            </div>
+            """)
+
+            # Existing authentication logic
+            if submitted:
+                try:
+                    user = authenticate(email, password)
+
+                except (mysql.connector.Error, RuntimeError):
+                    logger.exception(
+                        "Login failed due to a database/configuration error"
+                    )
+                    st.error(
+                        "Cannot connect to the database. "
+                        "Please contact the system administrator."
+                    )
+                    return
+
+                if user is None:
+                    st.error(
+                        "Invalid email or password, "
+                        "or account is unavailable."
+                    )
+                else:
+                    # Store user ID only
+                    st.session_state["user_id"] = user["user_id"]
+                    st.rerun()
+
+        st.html("""
+        <div class="gw-mission">
+            Supporting our mission, one thoughtfully
+            priced item at a time.
+        </div>
+        """)
+
+    # Footer
+    st.html("""
+    <div class="gw-footer">
+        <span>© 2026 Goodwill. All rights reserved.</span>
+        <span>Goodwill Pricing Decision Support System</span>
+    </div>
+    """)
+
 
 
 def sidebar(user):
