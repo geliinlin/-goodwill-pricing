@@ -6,7 +6,7 @@ import logging
 import mysql.connector
 import streamlit as st
 
-from auth import require_role
+from auth import require_user_type
 from guidelines import (
     ATTRIBUTE_FIELDS, LOOKUPS, GuidelineError, load_catalog,
     save_guideline, set_guideline_active, snapshot_token,
@@ -46,7 +46,7 @@ def _fields(lookups, prefix, row=None):
 
 
 def show_guideline_management(user):
-    require_role(user, {"Administrator"})
+    require_user_type(user, {"Administrator"})
     st.title("Pricing Guideline Management")
     st.caption("Maintain headquarters pricing by category, brand, condition and item type.")
     if notice := st.session_state.pop("guideline_notice", None):
