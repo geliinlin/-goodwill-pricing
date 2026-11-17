@@ -133,7 +133,7 @@ def show_login():
                         "Invalid email, username or password, "
                         "or account is unavailable."
                     )
-                    )
+                    
                 else:
                     # Store user ID only
                     st.session_state["user_id"] = user["user_id"]
