@@ -244,3 +244,42 @@
         margin-top: 55px;
     }
 }
+
+
+/* Password reset page */
+
+.gw-reset-note {
+    margin-top: 48px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    color: #647991;
+    font-size: 13px;
+    line-height: 1.7;
+}
+
+/* Back to Login text button */
+
+.st-key-gw_reset_back button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #00849A !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    min-height: 36px !important;
+}
+
+.st-key-gw_reset_back button:hover {
+    color: #006A7C !important;
+    background: transparent !important;
+}
+
+/* Forgot Password link */
+
+.st-key-gw_go_reset button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #00849A !important;
+    font-weight: 600 !important;
+}
