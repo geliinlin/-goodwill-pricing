@@ -29,12 +29,14 @@ def _to_session_user(row: dict[str, Any] | None) -> dict[str, Any] | None:
     user_type = row["User_Type"]
     if user_type == "Administrator" and row["Admin_Id"] is not None:
         role = "Administrator"
+    
     elif (
-        user_type == "Employee"
+        user_type == "Store Staff"
         and row["Staff_Id"] is not None
         and row["Branch_Id"] is not None
     ):
         role = "Employee"
+
     else:
         return None
 
