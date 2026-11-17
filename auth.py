@@ -79,24 +79,47 @@ def _read_one(statement: str, parameters: tuple[Any, ...]):
 
 
 
-def authenticate(email: str, password: str) -> dict[str, Any] | None:
-    """Authenticate a user using email and bcrypt password."""
 
-    email = email.strip() if isinstance(email, str) else ""
+def authenticate(login_identifier: str, password: str) -> dict[str, Any] | None:
+    """Authenticate using either email or username."""
 
-    if not email or not isinstance(password, str) or not password:
+    login_identifier = (
+        login_identifier.strip()
+        if isinstance(login_identifier, str)
+        else ""
+    )
+
+    if not login_identifier or not isinstance(password, str) or not password:
         return None
 
     sql = (
         "SELECT " + _USER_FIELDS + ", u.User_Password_Hash "
         + _USER_JOINS
-        + " WHERE u.User_Email = %s LIMIT 1"
+        + " WHERE u.User_Email = %s OR u.User_Username = %s "
+        + "LIMIT 2"
     )
 
-    row = _read_one(sql, (email,))
+    rows = []
+    connection = get_connection()
+    cursor = None
 
-    if row is None:
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            sql,
+            (login_identifier, login_identifier)
+        )
+        rows = cursor.fetchall()
+    finally:
+        if cursor is not None:
+            cursor.close()
+        connection.close()
+
+    # Reject ambiguous identifiers.
+    if len(rows) != 1:
         return None
+
+    row = rows[0]
 
     try:
         matches = bcrypt.checkpw(
@@ -107,6 +130,7 @@ def authenticate(email: str, password: str) -> dict[str, Any] | None:
         return None
 
     return _to_session_user(row) if matches else None
+
 
 
 
